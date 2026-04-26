@@ -367,8 +367,6 @@ function initCharts() {
 }
 
 // ===================== DATA FETCHING — TRADIER PRODUCTION =====================
-// NOTE: Must be served from a real URL (not file://) for CORS to work.
-// Deploy to GitHub Pages — see README section at bottom of this file.
 async function fetchTradier(ticker, tf, apikey) {
   var intervalMap = { '1min': '1min', '5min': '5min', '15min': '15min', '60min': '60min' };
   var interval = intervalMap[tf] || '5min';
@@ -376,27 +374,46 @@ async function fetchTradier(ticker, tf, apikey) {
   var end = new Date();
   var start = new Date();
   start.setDate(start.getDate() - 90);
-  var fmt = d => d.toISOString().split('T')[0];
 
-  var url = `https://api.tradier.com/v1/markets/timesales?symbol=${ticker}&interval=${interval}&start=${fmt(start)} 09:30&end=${fmt(end)} 16:00&session_filter=open`;
+  // Tradier requires YYYY-MM-DD HH:MM format - must be encoded properly
+  var fmt = d => d.toISOString().split('T')[0];
+  var startStr = fmt(start) + ' 09:30';
+  var endStr = fmt(end) + ' 16:00';
+
+  var params = new URLSearchParams({
+    symbol: ticker,
+    interval: interval,
+    start: startStr,
+    end: endStr,
+    session_filter: 'open'
+  });
+
+  var url = `https://api.tradier.com/v1/markets/timesales?${params.toString()}`;
 
   var res = await fetch(url, {
+    method: 'GET',
     headers: {
       'Authorization': `Bearer ${apikey}`,
       'Accept': 'application/json'
     }
   });
 
+  // Get body text for error diagnosis
+  var bodyText = await res.text();
+
   if (!res.ok) {
-    if (res.status === 400 || res.status === 403) {
-      throw new Error(`Connection blocked (${res.status}). This tool must be opened from a web server, not a local file. See setup instructions below.`);
-    }
-    throw new Error(`Tradier API error: ${res.status}`);
+    var errMsg = bodyText || res.status;
+    throw new Error(`Tradier ${res.status}: ${errMsg.slice(0, 120)}`);
   }
 
-  var data = await res.json();
+  var data;
+  try { data = JSON.parse(bodyText); } catch(e) { throw new Error('Invalid response from Tradier: ' + bodyText.slice(0,100)); }
+
   var series = data && data.series && data.series.data;
-  if (!series) throw new Error(`No data returned for ${ticker}. Try a different ticker or date range.`);
+  if (!series) {
+    // No trades in range — ticker may be delisted or no data
+    throw new Error(`No data for ${ticker} in last 90 days. Try SIDU, COCP, or a currently active ticker.`);
+  }
 
   var rows = Array.isArray(series) ? series : [series];
   var candles = rows.map(r => ({
@@ -408,7 +425,7 @@ async function fetchTradier(ticker, tf, apikey) {
     volume: parseInt(r.volume) || 0
   })).filter(c => !isNaN(c.open) && c.open > 0).sort((a, b) => a.time - b.time);
 
-  if (candles.length === 0) throw new Error(`No candle data for ${ticker}.`);
+  if (candles.length === 0) throw new Error(`No candle data parsed for ${ticker}.`);
   return candles;
 }
 
